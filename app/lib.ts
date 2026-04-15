@@ -19,14 +19,25 @@ type TransformedNode = {
     x: number;
     y: number;
   };
-  data: {
-    label: string;
-  };
+  data: NodeData;
 };
 type TransformedEdge = any; // TODO
 
+export type NodeField = {
+  label: string;
+  value: string;
+};
+
+export type NodeData = {
+  title: string;
+  address?: string;
+  summaryFields: NodeField[];
+  detailFields: NodeField[];
+  tone: "root" | "cpu" | "memory" | "bus" | "device";
+};
+
 const fourU8ToU32 = (f: number[]): number =>
-  (f[0] << 24) | (f[1] << 16) | (f[2] << 8) | f[3];
+  (((f[0] << 24) | (f[1] << 16) | (f[2] << 8) | f[3]) >>> 0);
 
 const u8ArrToU32Arr = (u8a: number[]): number[] => {
     let res = [];
@@ -65,6 +76,68 @@ const getPropStr = (n: DTNode, pname: string): string | null => {
   return p ? p.join(", ") : null;
 };
 
+const formatU32Hex = (v: number): string =>
+  `0x${v.toString(16).padStart(8, "0")}`;
+
+const getHexPropStr = (n: DTNode, pname: string): string | null => {
+  const p = getProp(n, pname);
+  return p ? p.map(formatU32Hex).join(", ") : null;
+};
+
+const formatStringList = (value: string | undefined): string | undefined =>
+  value ? value.split(";").filter(Boolean).join(", ") : undefined;
+
+const inferTone = (name: string, compat?: string): NodeData["tone"] => {
+  const nameLc = name.toLowerCase();
+  const compatLc = compat?.toLowerCase() || "";
+
+  if (nameLc === "root") {
+    return "root";
+  }
+  if (nameLc.startsWith("cpu") || compatLc.includes("cpu")) {
+    return "cpu";
+  }
+  if (nameLc.includes("memory") || compatLc.includes("memory")) {
+    return "memory";
+  }
+  if (
+    nameLc.includes("bus") ||
+    compatLc.includes("bus") ||
+    compatLc.includes("simple-bus")
+  ) {
+    return "bus";
+  }
+  return "device";
+};
+
+const toField = (label: string, value?: string): NodeField | null =>
+  value ? { label, value } : null;
+
+const buildNodeData = (n: DTNode): NodeData => {
+  const [name, addr] = n.name.split("@");
+  const address = transformAddr(addr);
+  const detailFields = [
+    toField("compatible", n.compat),
+    toField("reg", n.reg),
+    toField("clock-names", n.cnames),
+    toField("clocks", n.clks?.map(formatU32Hex).join(", ")),
+    toField("resets", n.resets?.map(formatU32Hex).join(", ")),
+    toField("dmas", n.dmas?.map(formatU32Hex).join(", ")),
+    toField("phandle", n.phandle !== undefined ? formatU32Hex(n.phandle) : undefined),
+    toField("phy-handle", n.phyHandle !== undefined ? formatU32Hex(n.phyHandle) : undefined),
+    toField("phy-supply", n.phySupply !== undefined ? formatU32Hex(n.phySupply) : undefined),
+    toField("children", n.children?.length !== undefined ? String(n.children.length) : undefined),
+  ].filter(Boolean) as NodeField[];
+
+  return {
+    title: name,
+    ...(address ? { address } : null),
+    summaryFields: detailFields.slice(0, 3),
+    detailFields,
+    tone: inferTone(name, n.compat),
+  };
+};
+
 // transform a node's props into numbers and strings, omitting many
 const transformNode = (n: DTNode): DTNode => {
   const name = n.name || "root";
@@ -77,8 +150,9 @@ const transformNode = (n: DTNode): DTNode => {
   const resets = getProp(n, "resets");
   const dmas = getProp(n, "dmas");
   const clks = getProp(n, "clocks");
-  const cnames = getStringProp(n, "clock-names");
-  const compat = getStringProp(n, "compatible");
+  const cnames = formatStringList(getStringProp(n, "clock-names"));
+  const compat = formatStringList(getStringProp(n, "compatible"));
+  const reg = getHexPropStr(n, "reg");
   return {
     name,
     ...(phandle ? { phandle: phandle[0] } : null),
@@ -89,6 +163,7 @@ const transformNode = (n: DTNode): DTNode => {
     ...(clks ? { clks } : null),
     ...(cnames ? { cnames } : null),
     ...(compat ? { compat } : null),
+    ...(reg ? { reg } : null),
   };
 };
 
@@ -100,8 +175,8 @@ export const transform = (n: DTNode, id: string = "10000") => {
   }
 };
 
-const NODE_WIDTH = 160;
-const NODE_HEIGHT = 80;
+const NODE_WIDTH = 300;
+const NODE_HEIGHT = 190;
 
 const weightedNode = (node: DTNode): DTNode => {
   if (node.children && node.children.length > 0) {
@@ -139,9 +214,6 @@ export const getNodesEdges = (tree: DTNode) => {
   const nodes: TransformedNode[] = [];
   const edges: TransformedEdge[] = [];
   const rec = (n: DTNode, d: number = 1, baseX: number = 0, baseY: number = 0) => {
-    const [name, addr] = n.name.split("@");
-    const baseAddr = transformAddr(addr);
-
     nodes.push({
       id: n.id,
       type: NodeType.custom,
@@ -149,9 +221,7 @@ export const getNodesEdges = (tree: DTNode) => {
         x: baseX + n.size * NODE_WIDTH / 2,
         y: baseY + d * NODE_HEIGHT,
       },
-      data: {
-        label: `${name}\n${baseAddr}\n${n.size}`,
-      },
+      data: buildNodeData(n),
     });
     let offset = baseX;
     n.children.forEach((c: DTNode, i: number) => {

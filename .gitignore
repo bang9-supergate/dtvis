@@ -11,6 +11,8 @@
 # next.js
 /.next/
 /out/
+/pkg/
+/parser/pkg/
 
 # production
 /build
