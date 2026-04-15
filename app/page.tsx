@@ -14,7 +14,6 @@ import ReactFlow, {
 import { useFilePicker } from "use-file-picker";
 import { NodeData, transform, getNodesEdges } from "./lib";
 import DTNode from "./DTNode";
-import "./page.module.css"
 
 const nodeTypes = {
   custom: DTNode
@@ -26,6 +25,7 @@ export default function Home() {
   const [nodes, setNodes, onNodesChange] = useNodesState<NodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [selectedNode, setSelectedNode] = useState<Node<NodeData> | null>(null);
+  const [showSourcePanel, setShowSourcePanel] = useState(false);
   const [searchText, setSearchText] = useState("");
   const [flow, setFlow] = useState<ReactFlowInstance | null>(null);
 
@@ -50,7 +50,13 @@ export default function Home() {
         const res = await parser.parse_dtb([...data]);
         const tree = transform(res.root);
         const f = getNodesEdges(tree);
-        setNodes(f.nodes);
+        const initialNodeId = f.nodes[0]?.id;
+        setNodes(
+          f.nodes.map((node) => ({
+            ...node,
+            selected: node.id === initialNodeId,
+          }))
+        );
         setEdges(f.edges);
         setSelectedNode(f.nodes[0] || null);
       } catch (e) {
@@ -82,12 +88,29 @@ export default function Home() {
     }
   }, [filesContent]);
 
+  useEffect(() => {
+    if (!selectedNode) {
+      setShowSourcePanel(false);
+    }
+  }, [selectedNode]);
+
   const fileName = plainFiles.length > 0 ? plainFiles[0].name : "";
 
   const pending = loading || inProgress;
 
   const focusNode = useCallback((node: Node<NodeData>) => {
     setSelectedNode(node);
+    setNodes((currentNodes) =>
+      currentNodes.map((currentNode) => ({
+        ...currentNode,
+        selected: currentNode.id === node.id,
+      }))
+    );
+    setEdges((currentEdges) =>
+      currentEdges.map((edge) =>
+        edge.selected ? { ...edge, selected: false } : edge
+      )
+    );
     flow?.fitView({
       nodes: [node],
       duration: 300,
@@ -95,7 +118,7 @@ export default function Home() {
       minZoom: 0.35,
       maxZoom: 1.2,
     });
-  }, [flow]);
+  }, [flow, setEdges, setNodes]);
 
   const onNodeClick = useCallback((_evt: React.MouseEvent, node: Node<NodeData>) => {
     focusNode(node);
@@ -103,7 +126,17 @@ export default function Home() {
 
   const onPaneClick = useCallback(() => {
     setSelectedNode(null);
-  }, []);
+    setNodes((currentNodes) =>
+      currentNodes.map((node) =>
+        node.selected ? { ...node, selected: false } : node
+      )
+    );
+    setEdges((currentEdges) =>
+      currentEdges.map((edge) =>
+        edge.selected ? { ...edge, selected: false } : edge
+      )
+    );
+  }, [setEdges, setNodes]);
 
   const filteredNodes = nodes.filter((node) => {
     const needle = searchText.trim().toLowerCase();
@@ -176,29 +209,60 @@ export default function Home() {
           </div>
           <div className="panelSection detailsSection">
             <div className="panelTitle">Node Details</div>
-            {selectedNode ? (
-              <>
-                <div className="panelName">{selectedNode.data.title}</div>
-                {selectedNode.data.address && (
-                  <div className="panelAddr">{selectedNode.data.address}</div>
-                )}
-                <div className="panelFields">
-                  {selectedNode.data.detailFields.map((field) => (
-                    <div key={field.label} className="panelField">
-                      <div className="panelFieldLabel">{field.label}</div>
-                      <div className="panelFieldValue">{field.value}</div>
-                    </div>
-                  ))}
+            <div className="detailScroll">
+              {selectedNode ? (
+                <>
+                  <div className="panelName">{selectedNode.data.title}</div>
+                  {selectedNode.data.address && (
+                    <div className="panelAddr">{selectedNode.data.address}</div>
+                  )}
+                  <div className="panelFields">
+                    {selectedNode.data.detailFields.map((field) => (
+                      <div key={field.label} className="panelField">
+                        <div className="panelFieldLabel">{field.label}</div>
+                        <div className="panelFieldValue">{field.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="panelEmpty">
+                  Select a node from the graph or the list.
                 </div>
-              </>
-            ) : (
-              <div className="panelEmpty">
-                Select a node from the graph or the list.
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </aside>
         <div className="flowCanvas">
+          <button
+            className="sourceToggle"
+            type="button"
+            disabled={!selectedNode}
+            aria-label="Toggle DTS source panel"
+            title="View DTS source"
+            onClick={() => setShowSourcePanel((open) => !open)}
+          >
+            {"</>"}
+          </button>
+          {showSourcePanel && selectedNode && (
+            <div className="sourcePanel">
+              <div className="sourcePanelHeader">
+                <div>
+                  <div className="sourcePanelTitle">DTS Source</div>
+                  <div className="sourcePanelNode">{selectedNode.data.title}</div>
+                </div>
+                <button
+                  className="sourceClose"
+                  type="button"
+                  aria-label="Close DTS source panel"
+                  onClick={() => setShowSourcePanel(false)}
+                >
+                  x
+                </button>
+              </div>
+              <pre className="sourceCode">{selectedNode.data.sourceSnippet}</pre>
+            </div>
+          )}
           <ReactFlow
             {...{
               nodes,
@@ -226,14 +290,26 @@ export default function Home() {
       </main>
       <style jsx>{`
         .layout {
+          --accent: #2b3ddc;
+          --accent-rgb: 43, 61, 220;
+          --accent-deep: #1f2ea8;
+          --accent-soft: #aeb8ff;
           height: 100vh;
-          display: flex;
-          flex-direction: column;
-          justify-content: space-between;
-          align-items: center;
-          padding: 20px;
+          height: 100dvh;
           min-height: 100vh;
+          min-height: 100dvh;
+          box-sizing: border-box;
+          font-family: "Pretendard Variable", "SUIT Variable", "Noto Sans KR", "Apple SD Gothic Neo", "Segoe UI", sans-serif;
+          display: grid;
+          grid-template-rows: auto minmax(0, 1fr);
+          align-items: stretch;
+          padding: 20px;
+          gap: 16px;
           overflow: hidden;
+        }
+        button,
+        input {
+          font: inherit;
         }
         header {
           width: 100%;
@@ -246,19 +322,57 @@ export default function Home() {
           flex-wrap: wrap;
         }
         .loadButton {
-          background-color: #101212;
-          border-radius: 7px;
-          border-width: 3px;
-          padding: 5px 25px;
+          border: 1px solid rgba(var(--accent-rgb), 0.42);
+          border-radius: 12px;
+          padding: 10px 18px;
           display: flex;
           align-items: center;
-          gap: 20px;
-          font-size: 22px;
+          justify-content: center;
+          gap: 12px;
+          min-width: 140px;
+          font-size: 15px;
+          font-weight: 700;
+          letter-spacing: 0.01em;
+          color: #eff6ff;
+          background:
+            linear-gradient(135deg, rgba(var(--accent-rgb), 0.96), rgba(31, 46, 168, 0.98)),
+            linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(8, 15, 24, 0.96));
+          box-shadow:
+            inset 0 1px 0 rgba(224, 231, 255, 0.18),
+            0 10px 24px rgba(var(--accent-rgb), 0.22);
+          transition:
+            transform 140ms ease,
+            box-shadow 140ms ease,
+            border-color 140ms ease,
+            filter 140ms ease;
+        }
+        .loadButton:hover:not(:disabled) {
+          transform: translateY(-1px);
+          border-color: rgba(var(--accent-rgb), 0.74);
+          box-shadow:
+            inset 0 1px 0 rgba(224, 231, 255, 0.24),
+            0 14px 30px rgba(var(--accent-rgb), 0.28);
+          filter: brightness(1.05);
+        }
+        .loadButton:active:not(:disabled) {
+          transform: translateY(0);
+          box-shadow:
+            inset 0 1px 0 rgba(224, 231, 255, 0.14),
+            0 8px 18px rgba(var(--accent-rgb), 0.22);
+        }
+        .loadButton:disabled {
+          cursor: wait;
+          color: rgba(226, 232, 240, 0.82);
+          border-color: rgba(71, 85, 105, 0.55);
+          background:
+            linear-gradient(180deg, rgba(30, 41, 59, 0.92), rgba(15, 23, 42, 0.96));
+          box-shadow: inset 0 1px 0 rgba(148, 163, 184, 0.08);
+          filter: saturate(0.75);
         }
         main {
           width: 100%;
-          height: clamp(860px, calc(100vh - 132px), 1240px);
-          max-height: calc(100vh - 132px);
+          height: 100%;
+          min-height: 0;
           display: grid;
           grid-template-columns: 340px minmax(0, 1fr);
           gap: 16px;
@@ -267,6 +381,7 @@ export default function Home() {
         }
         .sidePanel {
           min-width: 0;
+          min-height: 0;
           display: grid;
           grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
           gap: 16px;
@@ -282,14 +397,138 @@ export default function Home() {
           overflow: hidden;
         }
         .flowCanvas {
+          position: relative;
           min-width: 0;
+          min-height: 0;
           height: 100%;
           border: 1px solid #1f2937;
           border-radius: 18px;
           overflow: hidden;
           background:
-            radial-gradient(circle at top left, rgba(56, 189, 248, 0.08), transparent 28%),
+            radial-gradient(circle at top left, rgba(var(--accent-rgb), 0.1), transparent 28%),
             linear-gradient(180deg, #081018, #0c1420);
+        }
+        .flowCanvas :global(.react-flow) {
+          height: 100%;
+          border-radius: inherit;
+          background: transparent;
+        }
+        .flowCanvas :global(.react-flow__renderer),
+        .flowCanvas :global(.react-flow__pane),
+        .flowCanvas :global(.react-flow__viewport) {
+          border-radius: inherit;
+        }
+        .flowCanvas :global(.react-flow__background) {
+          border-radius: inherit;
+        }
+        .flowCanvas :global(.react-flow__edge.selected .react-flow__edge-path),
+        .flowCanvas :global(.react-flow__edge:focus .react-flow__edge-path) {
+          stroke: #475569;
+        }
+        .sourceToggle {
+          position: absolute;
+          top: 16px;
+          right: 16px;
+          z-index: 6;
+          width: 38px;
+          height: 38px;
+          border-radius: 12px;
+          border: 1px solid rgba(var(--accent-rgb), 0.34);
+          background: rgba(8, 15, 24, 0.9);
+          color: #d9f4ff;
+          font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", "JetBrains Mono", monospace;
+          font-size: 13px;
+          font-weight: 700;
+          box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+          transition:
+            transform 140ms ease,
+            border-color 140ms ease,
+            background 140ms ease,
+            color 140ms ease;
+        }
+        .sourceToggle:hover:not(:disabled) {
+          transform: translateY(-1px);
+          border-color: rgba(var(--accent-rgb), 0.72);
+          background: rgba(var(--accent-rgb), 0.16);
+          color: #f0f9ff;
+        }
+        .sourceToggle:disabled {
+          cursor: not-allowed;
+          color: rgba(148, 163, 184, 0.68);
+          border-color: rgba(71, 85, 105, 0.42);
+          background: rgba(15, 23, 42, 0.88);
+          box-shadow: none;
+        }
+        .sourcePanel {
+          position: absolute;
+          top: 62px;
+          right: 16px;
+          z-index: 6;
+          width: min(460px, calc(100% - 32px));
+          max-height: calc(100% - 78px);
+          display: flex;
+          flex-direction: column;
+          border: 1px solid rgba(var(--accent-rgb), 0.24);
+          border-radius: 16px;
+          overflow: hidden;
+          background: rgba(7, 12, 18, 0.96);
+          box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+          backdrop-filter: blur(16px);
+        }
+        .sourcePanelHeader {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 14px 16px 12px;
+          border-bottom: 1px solid rgba(30, 41, 59, 0.88);
+          background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.16), rgba(15, 23, 42, 0.16));
+        }
+        .sourcePanelTitle {
+          font-size: 11px;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: var(--accent);
+          margin-bottom: 4px;
+        }
+        .sourcePanelNode {
+          font-size: 14px;
+          font-weight: 700;
+          color: #f8fafc;
+        }
+        .sourceClose {
+          width: 28px;
+          height: 28px;
+          border-radius: 9px;
+          border: 1px solid rgba(71, 85, 105, 0.72);
+          background: rgba(15, 23, 42, 0.86);
+          color: #cbd5e1;
+          font-size: 13px;
+          line-height: 1;
+        }
+        .sourceCode {
+          margin: 0;
+          padding: 16px;
+          overflow: auto;
+          font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", "JetBrains Mono", monospace;
+          font-size: 12px;
+          line-height: 1.65;
+          color: #dbeafe;
+          white-space: pre;
+          scrollbar-width: thin;
+          scrollbar-color: rgba(var(--accent-rgb), 0.55) rgba(15, 23, 42, 0.7);
+        }
+        .sourceCode::-webkit-scrollbar {
+          width: 10px;
+          height: 10px;
+        }
+        .sourceCode::-webkit-scrollbar-track {
+          background: rgba(15, 23, 42, 0.72);
+        }
+        .sourceCode::-webkit-scrollbar-thumb {
+          background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.78), rgba(31, 46, 168, 0.92));
+          border-radius: 999px;
+          border: 2px solid rgba(15, 23, 42, 0.78);
         }
         .panelTitle {
           font-size: 12px;
@@ -322,12 +561,11 @@ export default function Home() {
           flex-direction: column;
           gap: 8px;
           min-height: 0;
-          height: clamp(520px, 46vh, 720px);
-          max-height: clamp(520px, 46vh, 720px);
+          flex: 1;
           overflow: auto;
           padding-right: 4px;
           scrollbar-width: thin;
-          scrollbar-color: rgba(56, 189, 248, 0.55) rgba(15, 23, 42, 0.7);
+          scrollbar-color: rgba(var(--accent-rgb), 0.55) rgba(15, 23, 42, 0.7);
         }
         .nodeList::-webkit-scrollbar,
         .detailsSection::-webkit-scrollbar {
@@ -340,13 +578,13 @@ export default function Home() {
         }
         .nodeList::-webkit-scrollbar-thumb,
         .detailsSection::-webkit-scrollbar-thumb {
-          background: linear-gradient(180deg, rgba(56, 189, 248, 0.78), rgba(14, 116, 144, 0.92));
+          background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.78), rgba(31, 46, 168, 0.92));
           border-radius: 999px;
           border: 2px solid rgba(15, 23, 42, 0.78);
         }
         .nodeList::-webkit-scrollbar-thumb:hover,
         .detailsSection::-webkit-scrollbar-thumb:hover {
-          background: linear-gradient(180deg, rgba(103, 232, 249, 0.92), rgba(8, 145, 178, 0.98));
+          background: linear-gradient(180deg, rgba(122, 138, 255, 0.92), rgba(43, 61, 220, 0.98));
         }
         .nodeListItem {
           width: 100%;
@@ -361,9 +599,9 @@ export default function Home() {
           gap: 4px;
         }
         .nodeListItem.active {
-          border-color: #38bdf8;
-          background: rgba(14, 116, 144, 0.2);
-          box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.2);
+          border-color: var(--accent);
+          background: rgba(var(--accent-rgb), 0.16);
+          box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.22);
         }
         .nodeListName {
           font-size: 13px;
@@ -371,14 +609,36 @@ export default function Home() {
           color: #f8fafc;
         }
         .nodeListAddr {
-          font-family: "Fira Code", monospace;
           font-size: 11px;
           color: #8ea0b5;
+          letter-spacing: 0.01em;
         }
         .detailsSection {
+          min-height: 0;
+          overflow: hidden;
+        }
+        .detailScroll {
+          min-height: 0;
+          flex: 1;
           overflow: auto;
+          padding-right: 4px;
           scrollbar-width: thin;
-          scrollbar-color: rgba(56, 189, 248, 0.55) rgba(15, 23, 42, 0.7);
+          scrollbar-color: rgba(var(--accent-rgb), 0.55) rgba(15, 23, 42, 0.7);
+        }
+        .detailScroll::-webkit-scrollbar {
+          width: 10px;
+        }
+        .detailScroll::-webkit-scrollbar-track {
+          background: rgba(15, 23, 42, 0.72);
+          border-radius: 999px;
+        }
+        .detailScroll::-webkit-scrollbar-thumb {
+          background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.78), rgba(31, 46, 168, 0.92));
+          border-radius: 999px;
+          border: 2px solid rgba(15, 23, 42, 0.78);
+        }
+        .detailScroll::-webkit-scrollbar-thumb:hover {
+          background: linear-gradient(180deg, rgba(122, 138, 255, 0.92), rgba(43, 61, 220, 0.98));
         }
         .panelName {
           font-size: 24px;
@@ -387,10 +647,10 @@ export default function Home() {
           margin-bottom: 6px;
         }
         .panelAddr {
-          font-family: "Fira Code", monospace;
           font-size: 12px;
           color: #8ea0b5;
           margin-bottom: 18px;
+          letter-spacing: 0.01em;
         }
         .panelFields {
           display: flex;
@@ -411,7 +671,6 @@ export default function Home() {
           margin-bottom: 6px;
         }
         .panelFieldValue {
-          font-family: "Fira Code", monospace;
           font-size: 12px;
           color: #e2e8f0;
           word-break: break-word;
@@ -426,15 +685,13 @@ export default function Home() {
         @media (max-width: 1100px) {
           main {
             grid-template-columns: 1fr;
-            height: auto;
-            max-height: none;
-            overflow: visible;
+            overflow: auto;
           }
           .sidePanel {
             grid-template-rows: auto auto;
           }
           .flowCanvas {
-            height: 70vh;
+            min-height: 70vh;
           }
           .panelSection {
             min-height: 220px;

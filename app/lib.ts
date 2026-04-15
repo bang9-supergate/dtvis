@@ -33,6 +33,7 @@ export type NodeData = {
   address?: string;
   summaryFields: NodeField[];
   detailFields: NodeField[];
+  sourceSnippet: string;
   tone: "root" | "cpu" | "memory" | "bus" | "device";
 };
 
@@ -79,13 +80,117 @@ const getPropStr = (n: DTNode, pname: string): string | null => {
 const formatU32Hex = (v: number): string =>
   `0x${v.toString(16).padStart(8, "0")}`;
 
+const formatU8Hex = (v: number): string =>
+  `0x${v.toString(16).padStart(2, "0")}`;
+
+const formatHexList = (values: number[], groupSize: number = values.length): string =>
+  values
+    .map(formatU32Hex)
+    .reduce((groups, value, index) => {
+      const groupIndex = Math.floor(index / groupSize);
+      groups[groupIndex] = groups[groupIndex] || [];
+      groups[groupIndex].push(value);
+      return groups;
+    }, [] as string[][])
+    .map((group) => group.join(", "))
+    .join("\n");
+
 const getHexPropStr = (n: DTNode, pname: string): string | null => {
   const p = getProp(n, pname);
-  return p ? p.map(formatU32Hex).join(", ") : null;
+  return p ? formatHexList(p) : null;
 };
 
 const formatStringList = (value: string | undefined): string | undefined =>
   value ? value.split(";").filter(Boolean).join(", ") : undefined;
+
+const looksLikeStringProp = (bytes: number[]): boolean => {
+  if (bytes.length === 0) {
+    return false;
+  }
+  return bytes.every((byte) =>
+    byte === 0 ||
+    byte === 9 ||
+    byte === 10 ||
+    byte === 13 ||
+    (byte >= 32 && byte <= 126)
+  );
+};
+
+const formatPropValue = (label: string, bytes: number[]): string => {
+  if (bytes.length === 0) {
+    return "(present)";
+  }
+  if (looksLikeStringProp(bytes)) {
+    const stringValue = formatStringList(u8ArrToStr(bytes));
+    if (stringValue) {
+      return stringValue;
+    }
+  }
+  if (bytes.length % 4 === 0) {
+    const values = u8ArrToU32Arr(bytes);
+    const groupSize = label === "reg" ? 2 : values.length;
+    return formatHexList(values, groupSize);
+  }
+  return bytes.map(formatU8Hex).join(", ");
+};
+
+const indent = (level: number): string => "  ".repeat(level);
+
+const formatDtsCellValue = (label: string, values: number[], level: number): string => {
+  const groupSize = label === "reg" ? 2 : values.length;
+  const groups = values.reduce((acc, value, index) => {
+    const groupIndex = Math.floor(index / groupSize);
+    acc[groupIndex] = acc[groupIndex] || [];
+    acc[groupIndex].push(formatU32Hex(value));
+    return acc;
+  }, [] as string[][]);
+
+  if (groups.length === 1) {
+    return `<${groups[0].join(" ")}>`;
+  }
+
+  const continuationIndent = `${indent(level)}  `;
+  return `<${groups[0].join(" ")}\n${groups
+    .slice(1)
+    .map((group) => `${continuationIndent}${group.join(" ")}`)
+    .join("\n")}>`;
+};
+
+const formatDtsPropLine = (label: string, bytes: number[], level: number): string => {
+  const prefix = `${indent(level)}${label}`;
+  if (bytes.length === 0) {
+    return `${prefix};`;
+  }
+
+  if (looksLikeStringProp(bytes)) {
+    const stringValues = u8ArrToStr(bytes).split(";").filter(Boolean);
+    if (stringValues.length > 0) {
+      return `${prefix} = ${stringValues.map((value) => JSON.stringify(value)).join(", ")};`;
+    }
+  }
+
+  if (bytes.length % 4 === 0) {
+    return `${prefix} = ${formatDtsCellValue(label, u8ArrToU32Arr(bytes), level + 1)};`;
+  }
+
+  return `${prefix} = [${bytes.map((value) => value.toString(16).padStart(2, "0")).join(" ")}];`;
+};
+
+const renderDtsSnippet = (node: DTNode, level: number = 0): string => {
+  const nodeName = node.name === "root" ? "/" : node.name;
+  const lines = [`${indent(level)}${nodeName} {`];
+
+  node.props.forEach(([label, bytes]: DTProp) => {
+    lines.push(formatDtsPropLine(label, bytes, level + 1));
+  });
+
+  (node.children || []).forEach((child: DTNode) => {
+    lines.push(renderDtsSnippet(child, level + 1));
+  });
+
+  lines.push(`${indent(level)}};`);
+  return lines.join("\n");
+};
 
 const inferTone = (name: string, compat?: string): NodeData["tone"] => {
   const nameLc = name.toLowerCase();
@@ -117,23 +222,22 @@ const buildNodeData = (n: DTNode): NodeData => {
   const [name, addr] = n.name.split("@");
   const address = transformAddr(addr);
   const detailFields = [
+    ...(n.rawDetailFields || []),
+    toField("children", n.children?.length !== undefined ? String(n.children.length) : undefined),
+  ].filter(Boolean) as NodeField[];
+
+  const summaryFields = [
     toField("compatible", n.compat),
     toField("reg", n.reg),
     toField("clock-names", n.cnames),
-    toField("clocks", n.clks?.map(formatU32Hex).join(", ")),
-    toField("resets", n.resets?.map(formatU32Hex).join(", ")),
-    toField("dmas", n.dmas?.map(formatU32Hex).join(", ")),
-    toField("phandle", n.phandle !== undefined ? formatU32Hex(n.phandle) : undefined),
-    toField("phy-handle", n.phyHandle !== undefined ? formatU32Hex(n.phyHandle) : undefined),
-    toField("phy-supply", n.phySupply !== undefined ? formatU32Hex(n.phySupply) : undefined),
-    toField("children", n.children?.length !== undefined ? String(n.children.length) : undefined),
   ].filter(Boolean) as NodeField[];
 
   return {
     title: name,
     ...(address ? { address } : null),
-    summaryFields: detailFields.slice(0, 3),
+    summaryFields,
     detailFields,
+    sourceSnippet: n.sourceSnippet || "",
     tone: inferTone(name, n.compat),
   };
 };
@@ -141,6 +245,11 @@ const buildNodeData = (n: DTNode): NodeData => {
 // transform a node's props into numbers and strings, omitting many
 const transformNode = (n: DTNode): DTNode => {
   const name = n.name || "root";
+  const rawDetailFields = n.props.map(([label, bytes]: DTProp) => ({
+    label,
+    value: formatPropValue(label, bytes),
+  }));
+  const sourceSnippet = renderDtsSnippet(n);
   // phandle is an identifier to the node
   const phandle = getProp(n, "phandle");
   // phy-handle is a ref to another node
@@ -152,7 +261,8 @@ const transformNode = (n: DTNode): DTNode => {
   const clks = getProp(n, "clocks");
   const cnames = formatStringList(getStringProp(n, "clock-names"));
   const compat = formatStringList(getStringProp(n, "compatible"));
-  const reg = getHexPropStr(n, "reg");
+  const regProp = getProp(n, "reg");
+  const reg = regProp ? formatHexList(regProp, 2) : null;
   return {
     name,
     ...(phandle ? { phandle: phandle[0] } : null),
@@ -164,6 +274,8 @@ const transformNode = (n: DTNode): DTNode => {
     ...(cnames ? { cnames } : null),
     ...(compat ? { compat } : null),
     ...(reg ? { reg } : null),
+    rawDetailFields,
+    sourceSnippet,
   };
 };
 
