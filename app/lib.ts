@@ -103,6 +103,61 @@ const getHexPropStr = (n: DTNode, pname: string): string | null => {
 const formatStringList = (value: string | undefined): string | undefined =>
   value ? value.split(";").filter(Boolean).join(", ") : undefined;
 
+const trimFraction = (value: number): string =>
+  value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2).replace(/\.0+$|(\.\d*[1-9])0+$/, "$1");
+
+const formatHumanFrequency = (value: number): string => {
+  if (value >= 1_000_000_000) {
+    return `${trimFraction(value / 1_000_000_000)} GHz`;
+  }
+  if (value >= 1_000_000) {
+    return `${trimFraction(value / 1_000_000)} MHz`;
+  }
+  if (value >= 1_000) {
+    return `${trimFraction(value / 1_000)} kHz`;
+  }
+  return `${value} Hz`;
+};
+
+const formatHumanBytes = (value: bigint): string => {
+  const units = [
+    { unit: "TB", size: 1024n ** 4n },
+    { unit: "GB", size: 1024n ** 3n },
+    { unit: "MB", size: 1024n ** 2n },
+    { unit: "KB", size: 1024n },
+  ];
+
+  for (const { unit, size } of units) {
+    if (value >= size) {
+      return `${trimFraction(Number(value) / Number(size))} ${unit}`;
+    }
+  }
+  return `${value.toString()} B`;
+};
+
+const u32PairToBigInt = (upper: number, lower: number): bigint =>
+  (BigInt(upper >>> 0) << 32n) | BigInt(lower >>> 0);
+
+const formatRegValue = (values: number[]): string => {
+  const groups = values.reduce((acc, value, index) => {
+    const groupIndex = Math.floor(index / 2);
+    acc[groupIndex] = acc[groupIndex] || [];
+    acc[groupIndex].push(value);
+    return acc;
+  }, [] as number[][]);
+
+  return groups
+    .map((group, index) => {
+      const rendered = group.map(formatU32Hex).join(", ");
+      const isSizeGroup = index % 2 === 1 && group.length === 2;
+      if (!isSizeGroup) {
+        return rendered;
+      }
+      return `${rendered} (${formatHumanBytes(u32PairToBigInt(group[0], group[1]))})`;
+    })
+    .join("\n");
+};
+
 const looksLikeStringProp = (bytes: number[]): boolean => {
   if (bytes.length === 0) {
     return false;
@@ -117,6 +172,7 @@ const looksLikeStringProp = (bytes: number[]): boolean => {
 };
 
 const formatPropValue = (label: string, bytes: number[]): string => {
+  const labelLc = label.toLowerCase();
   if (bytes.length === 0) {
     return "(present)";
   }
@@ -128,7 +184,18 @@ const formatPropValue = (label: string, bytes: number[]): string => {
   }
   if (bytes.length % 4 === 0) {
     const values = u8ArrToU32Arr(bytes);
-    const groupSize = label === "reg" ? 2 : values.length;
+    if (labelLc.includes("frequency")) {
+      return values.map((value) => `${value} (${formatHumanFrequency(value)})`).join(", ");
+    }
+    if (labelLc === "reg") {
+      return formatRegValue(values);
+    }
+    if (labelLc.includes("size") && !labelLc.includes("cells")) {
+      return values
+        .map((value) => `${value} (${formatHumanBytes(BigInt(value))})`)
+        .join(", ");
+    }
+    const groupSize = labelLc === "reg" ? 2 : values.length;
     return formatHexList(values, groupSize);
   }
   return bytes.map(formatU8Hex).join(", ");
@@ -262,7 +329,7 @@ const transformNode = (n: DTNode): DTNode => {
   const cnames = formatStringList(getStringProp(n, "clock-names"));
   const compat = formatStringList(getStringProp(n, "compatible"));
   const regProp = getProp(n, "reg");
-  const reg = regProp ? formatHexList(regProp, 2) : null;
+  const reg = regProp ? formatRegValue(regProp) : null;
   return {
     name,
     ...(phandle ? { phandle: phandle[0] } : null),
